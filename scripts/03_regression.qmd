@@ -1,0 +1,177 @@
+---
+title: "Notebook 0 - Statistical Exploration (LendingClub PD)"
+author: "Ryan Owens"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: flatly
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Objective
+
+This notebook explores the LendingClub dataset using descriptive statistics,
+distributions, and correlation analysis before modeling.
+
+
+```{r setup}
+library(arrow)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(janitor)
+```
+
+
+## Correlation Structure & Multicollinearity Exploration
+
+Before fitting any regression model, we examine correlations among numeric
+predictors. High correlations indicate potential multicollinearity, which can
+inflate standard errors and destabilize coefficient estimates.
+
+This step follows the standard diagnostic workflow for multiple regression and
+serves as a prerequisite for VIF analysis.
+
+```{r read}
+
+dt <- read_parquet("data/processed/loans_model_table.parquet") %>%
+  janitor::clean_names()
+
+class(dt)
+dim(dt)
+names(dt)
+head(dt)
+
+```
+
+```{r summary}
+table(dt$default_flag)
+prop.table(table(dt$default_flag))
+
+range(dt$issue_ym)
+
+dt %>%
+group_by(default_flag) %>%
+summarise(
+n = n(),
+mean_fico = mean(fico_mid, na.rm = TRUE),
+mean_dti = mean(dti, na.rm = TRUE),
+mean_int_rate = mean(int_rate, na.rm = TRUE),
+mean_loan_amnt = mean(loan_amnt, na.rm = TRUE)
+)
+
+
+```
+
+```{r features correlation}
+
+num_features <- dt %>%
+  select(
+    fico_mid,
+    dti,
+    int_rate,
+    loan_amnt,
+    annual_inc,
+    revol_util,
+    installment
+  )
+
+cor_mat <- cor(num_features, use = "pairwise.complete.obs")
+
+round(cor_mat, 2)
+```
+
+
+```{r pairs}
+pairs_df <- dt |>
+  dplyr::select(fico_mid, dti, int_rate, loan_amnt, annual_inc, revol_util, installment) |>
+  na.omit()
+
+# sample to keep it fast as dataset is huge
+set.seed(1)
+if (nrow(pairs_df) > 5000) pairs_df <- pairs_df[sample(nrow(pairs_df), 5000), ]
+
+pairs(pairs_df, pch = 19, main = "Scatterplot Matrix - LendingClub Numeric Predictors")
+
+
+```
+
+# notes
+revol_util shows nonlinear structure, loan_amount and installment near linear dependence,
+int_rate and fico_mid strong inverse relationship, annual_inc is heavily tailed and weak correlation
+
+## Multi Linear Regression
+
+```{r MLR}
+
+model_installment <- lm(
+  default_flag ~
+    fico_mid +
+    dti +
+    int_rate +
+    loan_amnt +
+    installment,
+  data = dt
+)
+
+summary(model_installment)
+
+
+```
+#  low r^2 is typical in default modeling, predictive value assessed via discrimination metrics
+# (AUC) not variance explained
+
+```{r diag}
+
+par(mfrow = c(2, 2))
+plot(model_installment)
+par(mfrow = c(1, 1))
+
+
+```
+# Residuals vs fitted - strong structure, clear bands, non-rando pattern
+# justifies going for logistic next
+# Q-Q Residuals - heavy tail, deviates from normality
+# Scale-Location - Heteroskedasticity
+# Residuals vs Leverage - some large cooks distance
+
+
+```{r vif}
+
+library(car)
+vif(model_installment)
+
+
+```
+# FICO, DTI, interest rate - no collinearity issues
+# loan_amount and installment are highly collinear, matching correlation matrix
+
+```{r influenceplot}
+
+influencePlot(
+  model_installment,
+  main = "Influence Plot - Installment Linear Probability Model",
+  sub = "Bubble size proportional to Cook's Distance"
+)
+
+
+```
+# A small number of large loans dominate leverage, which is expected
+
+
+```{r avplot}
+avPlots(model_installment)
+
+
+```
+
+# fico_mid: strong negative partial slope, robust signal
+# dti: positive slope, clean effect
+# int_rate: strongest linear signal
+# loan_amnt: positive but partially absorbed by installment
+# installment: weaker, flatter slope due to collinearity
