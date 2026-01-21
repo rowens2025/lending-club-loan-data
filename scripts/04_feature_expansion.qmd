@@ -1,0 +1,189 @@
+---
+title: "Notebook 4 — Feature Expansion: Behavioral Credit Signals"
+author: "Ryan Owens"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: flatly
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Objective
+
+This notebook evaluates whether borrower **behavioral credit variables** provide
+incremental predictive power for loan default beyond a baseline set of core
+features (FICO, DTI, interest rate, loan amount, installment).
+
+We focus on variables available at origination that reflect **credit usage behavior**
+(not loan outcomes) to avoid leakage and preserve interpretability.
+
+```{r libraries}
+library(arrow)
+library(dplyr)
+library(tidyr)
+library(pROC)
+
+```
+
+
+```{r code}
+dt <- read_parquet("data/processed/loans_model_table.parquet")
+
+cat("Rows in dt:", nrow(dt), "\n")
+cat("Default rate in dt:", round(mean(dt$default_flag, na.rm = TRUE), 4), "\n")
+
+# quick peek
+
+dplyr::glimpse(dt)
+
+vars_base <- c(
+"default_flag",
+"fico_mid",
+"dti",
+"int_rate",
+"loan_amnt",
+"installment"
+)
+
+vars_behavioral <- c(
+"revol_util",
+"open_acc",
+"total_acc",
+"inq_last_6mths",
+"delinq_2yrs",
+"pub_rec"
+)
+
+vars_all <- c(vars_base, vars_behavioral)
+
+cat("Baseline vars:", length(vars_base) - 1, "predictors\n")
+cat("Behavioral vars:", length(vars_behavioral), "predictors\n")
+cat("Total vars used for complete-case:", length(vars_all), "\n")
+
+
+
+```
+
+
+```{r shared}
+
+
+dt_cc <- dt %>%
+dplyr::select(dplyr::all_of(vars_all)) %>%
+tidyr::drop_na()
+
+cat("Rows in dt:", nrow(dt), "\n")
+cat("Rows in dt_cc (complete-case):", nrow(dt_cc), "\n")
+cat("Rows dropped due to missingness:", nrow(dt) - nrow(dt_cc), "\n")
+
+cat("Default rate in dt_cc:", round(mean(dt_cc$default_flag), 4), "\n")
+
+```
+
+```{r baselinee}
+
+model_logit_base_cc <- glm(
+default_flag ~ fico_mid + dti + int_rate + loan_amnt + installment,
+family = binomial(link = "logit"),
+data = dt_cc
+)
+
+summary(model_logit_base_cc)
+
+# Odds ratios (optional but useful)
+
+exp(coef(model_logit_base_cc))
+
+
+```
+
+
+```{r expans}
+
+model_logit_behavioral_cc <- glm(
+default_flag ~ fico_mid + dti + int_rate + loan_amnt + installment +
+revol_util + open_acc + total_acc + inq_last_6mths + delinq_2yrs + pub_rec,
+family = binomial(link = "logit"),
+data = dt_cc
+)
+
+summary(model_logit_behavioral_cc)
+
+# Odds ratios (optional)
+
+exp(coef(model_logit_behavioral_cc))
+
+
+```
+
+
+```{r comp_and}
+anova(model_logit_base_cc, model_logit_behavioral_cc, test = "Chisq")
+
+
+dt_cc$pd_base <- predict(model_logit_base_cc, type = "response")
+dt_cc$pd_beh  <- predict(model_logit_behavioral_cc, type = "response")
+
+roc_base <- roc(dt_cc$default_flag, dt_cc$pd_base)
+roc_beh  <- roc(dt_cc$default_flag, dt_cc$pd_beh)
+
+auc_base <- auc(roc_base)
+auc_beh  <- auc(roc_beh)
+
+auc_base
+auc_beh
+
+```
+
+
+```{r roc}
+
+plot(roc_base, col = "steelblue", lwd = 2,
+main = "ROC — Baseline vs Behavioral Logistic Model (Complete-Case)")
+plot(roc_beh, col = "darkgreen", lwd = 2, add = TRUE)
+
+legend("bottomright",
+legend = c(
+paste0("Baseline AUC = ", round(auc_base, 3)),
+paste0("Behavioral AUC = ", round(auc_beh, 3))
+),
+col = c("steelblue", "darkgreen"),
+lwd = 2)
+
+
+```
+
+# reading the results
+# Variable	Odds Ratio	Meaning
+# FICO	0.992	Higher score → lower default
+# DTI	1.017	Higher burden → higher risk
+# Int rate	1.115	Strongest risk signal
+# Installment	0.998	Payment controls loan size
+# Revol util	0.997	High utilization = stress
+# Open acc	1.021	More access = mixed risk
+# Total acc	0.985	Experience lowers risk
+# Inquiries	1.059	Credit shopping increases risk
+# Delinq 2yrs	1.014	Recent trouble matters
+# Public record	1.029	Severe signal
+
+
+# Comparison - 
+
+Deviance reduction: 4,273
+DF added: 6
+p-value < 2e-16
+
+Behavioral variables add statistically significant incremental information beyond capacity features
+
+| Model      | AUC       |
+| ---------- | --------- |
+| Baseline   | 0.694 |
+| Behavioral | 0.698 |
+
+This looks small but at scale, this can be huge across millions of rows
+
