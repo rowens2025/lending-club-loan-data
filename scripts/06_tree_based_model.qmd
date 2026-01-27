@@ -1,0 +1,113 @@
+---
+title: "Notebook 6 — Tree-Based Credit Risk Models"
+author: "Ryan Owens"
+date: 1/22/26
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: flatly
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r libaries}
+library(arrow)
+library(dplyr)
+library(pROC)
+library(ranger)
+
+
+```
+
+```{r load}
+
+
+dt <- read_parquet("data/processed/loans_model_table.parquet") %>%
+  mutate(issue_ym = as.character(issue_ym))
+
+vars_model <- c(
+  "issue_ym",
+  "default_flag",
+  "fico_mid","dti","int_rate","loan_amnt","installment",
+  "revol_util","open_acc","total_acc","inq_last_6mths","delinq_2yrs","pub_rec"
+)
+
+dt_cc <- dt %>%
+  select(all_of(vars_model)) %>%
+  tidyr::drop_na()
+
+```
+
+
+```{r train test}
+# split on time
+train_end <- "2017-12"
+test_start <- "2018-01"
+test_end <- "2018-12"
+
+train <- dt_cc %>% filter(issue_ym <= train_end)
+test  <- dt_cc %>% filter(issue_ym >= test_start, issue_ym <= test_end)
+
+cat("Train rows:", nrow(train), " Default rate:", round(mean(train$default_flag),4), "\n")
+cat("Test rows :", nrow(test),  " Default rate:", round(mean(test$default_flag),4), "\n")
+
+```
+
+
+```{r rfc}
+
+train <- train %>%
+  mutate(default_flag = factor(default_flag, levels = c(0, 1)))
+
+test <- test %>%
+  mutate(default_flag = factor(default_flag, levels = c(0, 1)))
+
+# Fit Random Forest classifier
+rf_model <- ranger(
+  default_flag ~ . - issue_ym,
+  data = train,
+  probability = TRUE,
+  num.trees = 300,
+  mtry = 4,
+  min.node.size = 1000,
+  importance = "impurity"
+)
+
+rf_pred <- predict(rf_model, data = test)$predictions
+
+rf_probs <- if (is.null(dim(rf_pred))) {
+  as.numeric(rf_pred)
+} else {
+  as.numeric(rf_pred[, 2])
+}
+
+# ROC / AUC
+roc_rf <- roc(test$default_flag, rf_probs)
+auc_rf <- auc(roc_rf)
+
+cat("Random Forest AUC (time split):", round(as.numeric(auc_rf), 4), "\n")
+
+# Plot ROC
+try(dev.off(), silent = TRUE)  
+par(mfrow = c(1, 1))
+par(mar = c(5, 5, 3, 2) + 0.1)
+
+ok <- TRUE
+tryCatch({
+  plot(roc_rf, lwd = 2, col = "darkorange",
+       main = "ROC — Random Forest (Time-Based Split)")
+}, error = function(e) {
+  ok <<- FALSE
+})
+#plot plane window too small
+if (!ok) {
+  windows(width = 8, height = 6)
+  par(mfrow = c(1, 1))
+  par(mar = c(5, 5, 3, 2) + 0.1)
+  plot(roc_rf, lwd = 2, col = "darkorange",
+       main = "ROC — Random Forest (Time-Based Split)")
+
+```

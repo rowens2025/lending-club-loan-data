@@ -1,0 +1,181 @@
+---
+title: "Notebook 5 — ML Baseline: Regularized Logistic Regression (glmnet)"
+author: "Ryan Owens"
+date: 1/22/26
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: flatly
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r libraries}
+install.packages("glmnet")
+library(glmnet)
+library(arrow)
+library(dplyr)
+library(tidyr)
+library(Matrix)
+library(glmnet)
+library(pROC)
+```
+
+
+```{r load}
+
+dt <- read_parquet("data/processed/loans_model_table.parquet")
+
+cat("Rows:", nrow(dt), "\n")
+cat("Default rate:", round(mean(dt$default_flag, na.rm = TRUE), 4), "\n")
+range(dt$issue_ym)
+
+
+```
+
+
+```{r feature selection}
+
+feature_cols <- c(
+  # core
+  "fico_mid","dti","int_rate","loan_amnt","installment",
+  # behavioral
+  "revol_util","open_acc","total_acc","inq_last_6mths","delinq_2yrs","pub_rec",
+  # categoricals
+  "term","home_ownership","verification_status","purpose","addr_state"
+)
+
+
+
+```
+
+
+```{r training parameters}
+
+dt <- dt %>% mutate(issue_ym = as.character(issue_ym))
+
+train_end <- "2017-12"
+test_start <- "2018-01"
+test_end <- "2018-12"
+
+dt_train <- dt %>% filter(issue_ym <= train_end)
+dt_test  <- dt %>% filter(issue_ym >= test_start, issue_ym <= test_end)
+
+cat("Train rows:", nrow(dt_train), "  Default rate:", round(mean(dt_train$default_flag), 4), "\n")
+cat("Test rows :", nrow(dt_test),  "  Default rate:", round(mean(dt_test$default_flag), 4), "\n")
+
+```
+
+
+```{r build model}
+
+needed <- c("default_flag", feature_cols)
+
+dt_train_cc <- dt_train %>%
+  dplyr::select(dplyr::all_of(needed)) %>%
+  tidyr::drop_na()
+
+dt_test_cc <- dt_test %>%
+  dplyr::select(dplyr::all_of(needed)) %>%
+  tidyr::drop_na()
+
+cat("Train complete-case:", nrow(dt_train_cc), "\n")
+cat("Test complete-case :", nrow(dt_test_cc), "\n")
+
+# Create design matrixes (one-hot encoding for factors)
+x_train <- model.matrix(default_flag ~ . , data = dt_train_cc)[, -1]
+y_train <- dt_train_cc$default_flag
+
+x_test <- model.matrix(default_flag ~ . , data = dt_test_cc)[, -1]
+y_test <- dt_test_cc$default_flag
+
+dim(x_train); dim(x_test)
+
+```
+
+
+```{r code}
+set.seed(1)
+
+alpha_val <- 0.5
+
+cvfit <- cv.glmnet(
+  x_train, y_train,
+  family = "binomial",
+  alpha = alpha_val,
+  nfolds = 5,
+  type.measure = "auc"
+)
+
+plot(cvfit)
+cvfit$lambda.min
+cvfit$lambda.1se
+```
+
+AUC increases rapidly at first (adding real signal)
+
+Then flattens out
+
+The vertical lines (delta.min and delta.1se) land around ~50–75 non-zero features
+
+The model needs on the order of 50–70 features to capture most of the available signal, but beyond that the marginal gain is very small.
+
+```{r eval on test}
+p_test <- as.numeric(predict(cvfit, newx = x_test, s = "lambda.min", type = "response"))
+
+roc_ml <- roc(y_test, p_test)
+auc_ml <- auc(roc_ml)
+
+auc_ml
+
+plot(roc_ml, lwd = 2, main = paste0("Test ROC (glmnet, alpha=", alpha_val, ")"))
+
+```
+
+```{r compare}
+
+# Simple baseline logistic on same train_cc
+baseline_cols <- c("default_flag",
+                   "fico_mid","dti","int_rate","loan_amnt","installment",
+                   "revol_util","open_acc","total_acc","inq_last_6mths","delinq_2yrs","pub_rec")
+
+train_b <- dt_train %>% select(all_of(baseline_cols)) %>% drop_na()
+test_b  <- dt_test  %>% select(all_of(baseline_cols)) %>% drop_na()
+
+m_base <- glm(default_flag ~ . , data = train_b, family = binomial(link="logit"))
+p_base <- predict(m_base, newdata = test_b, type="response")
+
+roc_base <- roc(test_b$default_flag, p_base)
+auc_base <- auc(roc_base)
+
+auc_base
+
+plot(roc_base, lwd=2, main="Test ROC (plain logistic baseline)")
+
+```
+
+
+```{r inspect}
+
+coef_mat <- coef(cvfit, s = "lambda.min")
+coef_df <- data.frame(
+  feature = rownames(coef_mat),
+  coef = as.numeric(coef_mat)
+) %>%
+  filter(feature != "(Intercept)") %>%
+  arrange(desc(abs(coef)))
+
+coef_df <- coef_df %>%
+  mutate(
+    odds_ratio = exp(coef),
+    odds_def = 1 - odds_ratio
+  )
+
+head(coef_df, 25)
+
+```
+
+Wedding-purpose loans have ~41% lower odds of default than the baseline purpose, conditional on all other features.
