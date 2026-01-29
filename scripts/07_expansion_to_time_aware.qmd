@@ -1,0 +1,293 @@
+---
+title: "Notebook 7 — Expansion to Time Aware"
+author: "Ryan Owens"
+date: 1/27/26
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: flatly
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r libraries read}
+
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(arrow)
+
+# Config
+RAW_PATH <- "data/processed/loans_survival_table.parquet"
+
+
+dt_surv <- read_parquet(RAW_PATH)
+
+head(dt_surv)
+str(dt_surv)
+
+```
+
+
+```{r surv cox}
+
+```{r surv_cox}
+library(survival)
+library(tidyr)
+
+cox_data <- dt_surv %>%
+  select(
+    duration_months, event_default,
+
+    # Core origination risk
+    fico_mid,
+    dti,
+    int_rate,
+    loan_amnt,
+    installment,
+
+    # Bureau & behavioral
+    revol_util,
+    acc_open_past_24mths,
+    num_tl_30dpd,
+    num_tl_90g_dpd_24m,
+    pct_tl_nvr_dlq,
+    percent_bc_gt_75,
+    pub_rec_bankruptcies,
+    tax_liens
+  ) %>%
+  drop_na()
+
+S_cc <- Surv(
+  time  = cox_data$duration_months,
+  event = cox_data$event_default
+)
+
+cox_model <- coxph(
+  S_cc ~
+    fico_mid +
+    dti +
+    int_rate +
+    loan_amnt +
+    installment +
+    revol_util +
+    acc_open_past_24mths +
+    num_tl_30dpd +
+    num_tl_90g_dpd_24m +
+    pct_tl_nvr_dlq +
+    percent_bc_gt_75 +
+    pub_rec_bankruptcies +
+    tax_liens,
+  data = cox_data
+)
+
+summary(cox_model)
+
+
+```
+
+
+```{r plot}
+
+# Linear predictor (risk score)
+cox_data$risk_score <- predict(cox_model, type = "lp")
+
+# Bin into quintiles
+cox_data$risk_bin <- cut(
+  cox_data$risk_score,
+  breaks = quantile(cox_data$risk_score, probs = seq(0, 1, 0.2)),
+  include.lowest = TRUE
+)
+
+# Fit survival curves
+fit_bins <- survfit(
+  Surv(duration_months, event_default) ~ risk_bin,
+  data = cox_data
+)
+
+# Plot
+plot(
+  fit_bins,
+  xlab = "Months Since Origination",
+  ylab = "Survival Probability (Not Defaulted)",
+  main = "Time to Default by Predicted Risk Bucket",
+  col = 1:5,
+  lwd = 2
+)
+
+legend(
+  "bottomleft",
+  legend = levels(cox_data$risk_bin),
+  col = 1:5,
+  lwd = 2,
+  cex = 0.8
+)
+
+```
+#
+
+```{r plot2}
+
+plot(
+  fit_bins,
+  fun = "event",
+  xlab = "Months Since Origination",
+  ylab = "Cumulative Default Probability",
+  main = "Cumulative Default Risk Over Time",
+  col = 1:5,
+  lwd = 2
+)
+
+```
+
+## buckets are early risk default groups, we assign each record a continuous risk score
+## the buckets just visualize the ability to predict default risk
+```{r train test split}
+split_date <- as.Date("2017-01-01")
+
+train_surv <- dt_surv %>%
+  filter(issue_d_dt < split_date)
+
+test_surv <- dt_surv %>%
+  filter(issue_d_dt >= split_date)
+cat("Train rows:", nrow(train_surv))
+cat("Test rows :", nrow(test_surv))
+
+cat("Train default rate:", mean(train_surv$event_default))
+cat("Test default rate :", mean(test_surv$event_default))
+
+
+```
+
+```{r cox model train}
+
+cox_train_data <- train_surv %>%
+  select(
+    duration_months, event_default,
+    fico_mid, dti, int_rate, loan_amnt, installment,
+    revol_util,
+    acc_open_past_24mths,
+    num_tl_30dpd,
+    num_tl_90g_dpd_24m,
+    pct_tl_nvr_dlq,
+    percent_bc_gt_75,
+    pub_rec_bankruptcies,
+    tax_liens
+  ) %>%
+  tidyr::drop_na()
+
+S_train <- Surv(
+  time  = cox_train_data$duration_months,
+  event = cox_train_data$event_default
+)
+
+cox_model <- coxph(
+  S_train ~ . - duration_months - event_default,
+  data = cox_train_data
+)
+
+
+```
+
+
+```{r lp}
+
+test_scoring_data <- test_surv %>%
+  select(
+    duration_months, event_default,
+    fico_mid, dti, int_rate, loan_amnt, installment,
+    revol_util,
+    acc_open_past_24mths,
+    num_tl_30dpd,
+    num_tl_90g_dpd_24m,
+    pct_tl_nvr_dlq,
+    percent_bc_gt_75,
+    pub_rec_bankruptcies,
+    tax_liens
+  ) %>%
+  tidyr::drop_na()
+
+test_scoring_data$risk_score <- predict(
+  cox_model,
+  newdata = test_scoring_data,
+  type = "lp"
+)
+
+
+```
+
+
+```{r true perf}
+
+S_test <- Surv(
+  test_scoring_data$duration_months,
+  test_scoring_data$event_default
+)
+
+test_concordance <- survConcordance(
+  S_test ~ test_scoring_data$risk_score
+)
+
+cat("Test Concordance:", round(test_concordance$concordance, 3))
+
+
+```
+
+
+```{r define default windows}
+
+test_scoring_data <- test_scoring_data %>%
+  mutate(
+    default_6m  = as.integer(event_default == 1 & duration_months <= 6),
+    default_9m  = as.integer(event_default == 1 & duration_months <= 9),
+    default_12m = as.integer(event_default == 1 & duration_months <= 12)
+  )
+
+
+```
+
+
+```{r cut offs}
+
+test_scoring_data <- test_scoring_data %>%
+  mutate(
+    risk_decile = ntile(risk_score, 10)
+  )
+
+```
+```{r default capture tables}
+
+
+capture_6m <- test_scoring_data %>%
+  group_by(risk_decile) %>%
+  summarise(
+    loans = n(),
+    defaults_6m = sum(default_6m),
+    default_rate_6m = mean(default_6m)
+  ) %>%
+  arrange(desc(risk_decile))
+
+capture_6m
+
+
+capture_6m %>%
+  mutate(
+    cum_defaults = cumsum(defaults_6m),
+    cum_default_share = cum_defaults / sum(defaults_6m)
+  )
+
+
+```
+
+
+## In 66.4% of comparable loan pairs, the model correctly ranked which loan defaulted sooner
+
+## The highest-risk 10% of loans have a 16.4% chance of defaulting within 6 months
+## The lowest-risk 10% have only ~2.2%
+## 7.5× separation between top and bottom deciles
+
+# The top 20% of predicted-risk loans account for ~38% of all 6-month defaults
