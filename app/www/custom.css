@@ -1,0 +1,210 @@
+/* app/www/custom.css */
+
+/* ---------- Root palette (inspired by Trackwise screenshot) ---------- */
+:root{
+  --bg: #0b1220;                 /* deep navy */
+  --sidebar: #071a3a;            /* sidebar navy */
+  --surface: #3f4f70;            /* slate content */
+  --surface-2: #334463;          /* darker slate */
+  --border: rgba(255,255,255,0.10);
+
+  --text: #eaf1fb;
+  --muted: rgba(234,241,251,0.70);
+
+  --teal: #49c5aa;
+  --lime: #b7d84b;
+  --orange: #ff8a5c;
+
+  --plot-bg: #ffffff;            /* plot panels are white like your screenshot */
+  --plot-axis: #0b1220;          /* dark axis text so it shows on white */
+}
+
+/* ---------- Page background ---------- */
+html, body {
+  height: 100%;
+  background: var(--bg) !important;
+}
+body {
+  color: var(--text);
+}
+
+/* ---------- Navbar ---------- */
+.navbar {
+  background: rgba(10, 18, 32, 0.88) !important;
+  border-bottom: 1px solid var(--border) !important;
+  backdrop-filter: blur(10px);
+}
+.navbar .navbar-brand,
+.navbar .nav-link {
+  color: var(--text) !important;
+}
+.navbar .nav-link.active {
+  color: var(--teal) !important;
+}
+
+/* ---------- Layout shell ---------- */
+.tw-shell{
+  display:grid;
+  grid-template-columns: 280px 1fr;
+  gap:0;
+  min-height: calc(100vh - 56px);
+}
+
+/* Sidebar */
+.tw-sidebar{
+  background: linear-gradient(180deg, rgba(7,26,58,1) 0%, rgba(5,20,45,1) 100%);
+  border-right: 1px solid var(--border);
+  padding: 18px 14px;
+}
+
+.tw-side-title{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-weight:700;
+  letter-spacing:0.3px;
+  margin-bottom:18px;
+}
+
+.tw-logo{
+  width:34px;
+  height:34px;
+  border-radius:10px;
+  background: rgba(73,197,170,0.20);
+  border: 1px solid rgba(73,197,170,0.35);
+  display:grid;
+  place-items:center;
+  color: var(--teal);
+  font-weight:800;
+}
+
+.tw-side-pill{
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.tw-side-group{
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Main surface */
+.tw-main{
+  background: linear-gradient(180deg, rgba(63,79,112,1) 0%, rgba(48,65,96,1) 100%);
+}
+
+/* Hero band */
+.tw-hero{
+  height: 210px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border);
+  background:
+    radial-gradient(circle at 15% 70%, rgba(12,34,82,0.95) 0%, rgba(12,34,82,0) 45%),
+    radial-gradient(circle at 55% 25%, rgba(73,197,170,0.65) 0%, rgba(73,197,170,0) 45%),
+    radial-gradient(circle at 85% 35%, rgba(255,204,128,0.65) 0%, rgba(255,204,128,0) 45%),
+    linear-gradient(90deg, rgba(12,34,82,0.90) 0%, rgba(73,197,170,0.35) 45%, rgba(255,204,128,0.25) 100%);
+}
+
+/* KPI row */
+.tw-kpis{
+  display:grid;
+  grid-template-columns: repeat(5, minmax(160px, 1fr));
+  gap: 16px;
+  margin-top: 22px;
+  align-items: stretch;
+}
+
+.tw-kpi{
+  background: rgba(14, 33, 60, 0.65);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  padding: 16px 16px 14px 16px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.18);
+}
+
+.tw-kpi .label{
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.tw-kpi .value{
+  font-size: 36px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.tw-kpi .sub{
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.tw-kpi.teal .value{ color: var(--teal); }
+.tw-kpi.lime .value{ color: var(--lime); }
+.tw-kpi.orange .value{ color: var(--orange); }
+
+/* Cards */
+.tw-cards{
+  padding: 18px 22px 26px 22px;
+  display:grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+}
+
+.tw-card{
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 14px 12px 14px;
+}
+
+.tw-card h4{
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: rgba(234,241,251,0.85);
+}
+
+/* Plot output wrapper */
+.tw-plot .shiny-plot-output{
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--plot-bg);
+}
+
+/* Inputs styling */
+.tw-sidebar .form-control,
+.tw-sidebar .selectize-control .selectize-input,
+.tw-sidebar .btn,
+.tw-sidebar .bootstrap-select > .dropdown-toggle {
+  background: rgba(255,255,255,0.06) !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  color: var(--text) !important;
+}
+
+.tw-sidebar label{
+  color: rgba(234,241,251,0.85);
+}
+
+/* Make picker dropdown menu readable */
+.bootstrap-select .dropdown-menu {
+  background: rgba(10,18,32,0.98) !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+}
+.bootstrap-select .dropdown-menu li a {
+  color: var(--text) !important;
+}
+.bootstrap-select .dropdown-menu li.selected a,
+.bootstrap-select .dropdown-menu li a:hover {
+  background: rgba(73,197,170,0.15) !important;
+}
+
+/* Small button spacing */
+.tw-sidebar .btn{
+  margin-right: 8px;
+}
+

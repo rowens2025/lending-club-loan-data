@@ -25,6 +25,7 @@ library(dplyr)
 library(ggplot2)
 library(tidyr)
 library(janitor)
+library(here)
 ```
 
 
@@ -39,7 +40,7 @@ serves as a prerequisite for VIF analysis.
 
 ```{r read}
 
-dt <- read_parquet("data/processed/loans_model_table.parquet") %>%
+dt <- read_parquet(here("data/processed/loans_model_table.parquet")) %>%
   janitor::clean_names()
 
 class(dt)

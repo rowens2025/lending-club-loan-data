@@ -22,12 +22,13 @@ library(tidyr)
 library(Matrix)
 library(glmnet)
 library(pROC)
+library(here)
 ```
 
 
 ```{r load}
 
-dt <- read_parquet("data/processed/loans_model_table.parquet")
+dt <- read_parquet(here("data/processed/loans_model_table.parquet"))
 
 cat("Rows:", nrow(dt), "\n")
 cat("Default rate:", round(mean(dt$default_flag, na.rm = TRUE), 4), "\n")

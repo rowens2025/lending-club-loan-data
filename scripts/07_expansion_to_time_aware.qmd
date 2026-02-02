@@ -20,12 +20,13 @@ library(dplyr)
 library(lubridate)
 library(stringr)
 library(arrow)
+library(here)
 
 # Config
 RAW_PATH <- "data/processed/loans_survival_table.parquet"
 
 
-dt_surv <- read_parquet(RAW_PATH)
+dt_surv <- read_parquet(here(RAW_PATH))
 
 head(dt_surv)
 str(dt_surv)
@@ -35,7 +36,7 @@ str(dt_surv)
 
 ```{r surv cox}
 
-```{r surv_cox}
+
 library(survival)
 library(tidyr)
 

@@ -233,3 +233,4 @@ data/processed/
 *.parquet
 
 
+.Rproj.user

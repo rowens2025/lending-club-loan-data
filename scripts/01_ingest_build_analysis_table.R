@@ -5,6 +5,7 @@ library(stringr)
 library(janitor)
 library(arrow)
 
+
 # --- Initial Config ---
 RAW_PATH  <- "data/raw/accepted_2007_to_2018Q4.csv"
 OUT_PATH  <- "data/processed/loans_analysis_ready.parquet"

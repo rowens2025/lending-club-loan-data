@@ -27,12 +27,12 @@ library(arrow)
 library(dplyr)
 library(tidyr)
 library(pROC)
-
+library(here)
 ```
 
 
 ```{r code}
-dt <- read_parquet("data/processed/loans_model_table.parquet")
+dt <- read_parquet(here("data/processed/loans_model_table.parquet"))
 
 cat("Rows in dt:", nrow(dt), "\n")
 cat("Default rate in dt:", round(mean(dt$default_flag, na.rm = TRUE), 4), "\n")
