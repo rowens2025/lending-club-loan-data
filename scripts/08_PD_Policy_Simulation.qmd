@@ -1,0 +1,484 @@
+---
+title: "Notebook 8 — PD Policy Simulation (Logistic Regression + Realized Economics)"
+author: "Ryan Owens"
+date: "2/2/2026"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: flatly
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Objective
+
+Train an interpretable origination PD model (plain logistic regression) on mature vintages,
+then simulate underwriting policies on a held-out year using **realized cashflow economics**.
+
+### Economics (never used as model features)
+
+If available (or computable from cashflow columns):
+
+- **Realized net loss (principal net of recoveries)**  
+  `realized_net_loss = loan_amnt - total_rec_prncp - recoveries + collection_recovery_fee`
+
+- **Realized net profit (simple)**  
+  `realized_net_profit = total_rec_int + total_rec_late_fee - realized_net_loss`
+
+### Proxies (fallback only)
+
+- **Loss proxy** (conservative): `loan_amnt * default_flag * LGD`
+- **Revenue proxy** (simple): `installment * horizon_months`
+
+For each policy: **"Decline top X% highest-PD loans"**, compute:
+
+- Defaults avoided
+- Loss avoided
+- Profit change (vs baseline)
+- Net impact (policy − baseline)
+
+---
+
+```{r libraries}
+library(arrow)
+library(dplyr)
+library(tidyr)
+library(janitor)
+library(lubridate)
+library(ggplot2)
+library(pROC)
+library(here)
+library(scales)
+
+```
+
+```{r code}
+# ----------------------------
+# Paths
+# ----------------------------
+IN_PATH      <- here("data", "processed", "loans_model_table.parquet")
+OUT_SCORED   <- here("data", "processed", "pd_scored_2016.parquet")
+OUT_DECILES  <- here("data", "processed", "pd_deciles_2016.parquet")
+OUT_POLICY   <- here("data", "processed", "pd_policy_curve_2016.parquet")
+
+# ----------------------------
+# Time split (mature backtest)
+# ----------------------------
+train_end  <- "2015-12"
+test_start <- "2016-01"
+test_end   <- "2016-12"
+
+# ----------------------------
+# Proxy knobs (fallback only)
+# ----------------------------
+LGD <- 1.0
+horizon_months <- 12
+
+# ----------------------------
+# Model features (origination-only; no leakage)
+# ----------------------------
+feature_cols <- c(
+  "fico_mid","dti","int_rate","loan_amnt","installment",
+  "revol_util","open_acc","total_acc","inq_last_6mths","delinq_2yrs","pub_rec",
+  "term","home_ownership","verification_status","purpose","addr_state"
+)
+
+# ----------------------------
+# Economics columns (ex-post; never used in model)
+# ----------------------------
+econ_base_cols <- c(
+  "loan_amnt",
+  "total_rec_prncp","total_rec_int","total_rec_late_fee",
+  "recoveries","collection_recovery_fee"
+)
+
+econ_optional_cols <- c(
+  "total_pymnt","total_pymnt_inv",
+  "realized_net_loss","realized_net_profit" # if you precomputed upstream
+)
+```
+
+
+```{r code}
+
+dt <- read_parquet(IN_PATH) |>
+  clean_names() |>
+  mutate(issue_ym = as.character(issue_ym))
+
+cat("Rows:", nrow(dt), "\n")
+cat("Terminal bad-outcome rate (completed-loans population):",
+    round(mean(dt$default_flag, na.rm = TRUE), 4), "\n")
+cat("Issue range:", min(dt$issue_ym, na.rm = TRUE), "→", max(dt$issue_ym, na.rm = TRUE), "\n")
+
+missing_features <- setdiff(feature_cols, names(dt))
+if (length(missing_features) > 0) {
+  stop("Missing feature columns in loans_model_table.parquet: ",
+       paste(missing_features, collapse = ", "))
+}
+
+present_optional <- intersect(econ_optional_cols, names(dt))
+cat("Optional econ cols present:", paste(present_optional, collapse = ", "), "\n")
+
+
+```
+
+Train test split on before 2016 as 2017/18 data is too close to origination and not accurate
+
+```{r tt split}
+# Train: <= 2015-12
+# Test : 2016-01 .. 2016-12
+dt_train <- dt |> filter(issue_ym <= train_end)
+dt_test  <- dt |> filter(issue_ym >= test_start, issue_ym <= test_end)
+
+cat("Train rows:", nrow(dt_train),
+    " Default rate:", round(mean(dt_train$default_flag, na.rm = TRUE), 4), "\n")
+cat("Test rows :", nrow(dt_test),
+    " Default rate:", round(mean(dt_test$default_flag,  na.rm = TRUE), 4), "\n")
+
+
+```
+
+```{r code}
+
+# IMPORTANT:
+# issue_ym is ONLY for splitting/inspection.
+# Do NOT feed issue_ym into glm or predict to avoid factor-level/time leakage issues.
+
+needed_model <- c("default_flag", feature_cols)
+
+train_cc <- dt_train |>
+  select(all_of(needed_model)) |>
+  drop_na()
+
+# For test, keep econ cols if present (or can be computed)
+needed_test <- unique(c("issue_ym", needed_model, econ_base_cols, econ_optional_cols))
+test_cc <- dt_test |>
+  select(any_of(needed_test)) |>
+  drop_na()
+
+cat("Train complete-case:", nrow(train_cc), "\n")
+cat("Test complete-case :", nrow(test_cc),  "\n")
+
+
+```
+
+
+```{r log reg}
+
+model_glm <- glm(
+  default_flag ~ .,
+  data = train_cc,
+  family = binomial(link = "logit")
+)
+
+summary(model_glm)
+
+```
+
+
+
+```{r roc_auc}
+
+test_cc <- test_cc |>
+  mutate(pd = predict(model_glm, newdata = test_cc, type = "response"))
+
+roc_obj <- roc(test_cc$default_flag, test_cc$pd)
+auc_val <- auc(roc_obj)
+
+cat("Test AUC (2016):", round(as.numeric(auc_val), 4), "\n")
+
+plot(
+  roc_obj,
+  lwd = 2,
+  main = paste0("ROC — Logistic PD (Train≤", train_end, ", Test=2016)")
+)
+abline(a = 0, b = 1, lty = 2, col = "grey70")
+
+```
+
+
+```{r deciles}
+
+# ------------------------------------------------------------------------------
+# ECONOMICS: prefer realized, otherwise fall back to proxy
+# ------------------------------------------------------------------------------
+# We will end with:
+#   realized_loss   (>=0)
+#   realized_profit (can be negative)
+# If those cannot be computed, we'll still compute proxies.
+
+has_realized <- all(c("realized_net_loss", "realized_net_profit") %in% names(test_cc))
+
+# If not precomputed, attempt to compute from base cashflow fields
+if (!has_realized) {
+  if (all(econ_base_cols %in% names(test_cc))) {
+    test_cc <- test_cc |>
+      mutate(
+        realized_net_loss = as.numeric(loan_amnt) -
+          as.numeric(total_rec_prncp) -
+          as.numeric(recoveries) +
+          as.numeric(collection_recovery_fee),
+
+        # simple realized profit: interest + late fees minus realized net loss
+        realized_net_profit =
+          as.numeric(total_rec_int) +
+          as.numeric(total_rec_late_fee) -
+          realized_net_loss
+      )
+    has_realized <- TRUE
+  }
+}
+
+# Standardize final realized fields we will actually use downstream:
+if (has_realized) {
+  test_cc <- test_cc |>
+    mutate(
+      realized_loss   = pmax(as.numeric(realized_net_loss), 0),
+      realized_profit = as.numeric(realized_net_profit)
+    )
+} else {
+  test_cc <- test_cc |>
+    mutate(
+      realized_loss   = NA_real_,
+      realized_profit = NA_real_
+    )
+}
+
+cat("Using realized economics:", has_realized, "\n")
+```
+
+
+```{r deciles}
+
+scored_2016 <- test_cc |>
+  mutate(
+    # Proxies always computed (fallback + comparison)
+    loss_proxy = loan_amnt * default_flag * LGD,
+    rev_proxy  = installment * horizon_months,
+    net_proxy  = rev_proxy - loss_proxy,
+
+    # PD buckets
+    risk_decile = ntile(pd, 10) # 10 = highest PD (riskiest)
+  )
+
+deciles_tbl <- scored_2016 |>
+  group_by(risk_decile) |>
+  summarise(
+    loans        = n(),
+    defaults     = sum(default_flag == 1, na.rm = TRUE),
+    default_rate = mean(default_flag, na.rm = TRUE),
+    avg_pd       = mean(pd, na.rm = TRUE),
+    total_balance = sum(loan_amnt, na.rm = TRUE),
+
+    # Realized economics (if available)
+    realized_loss   = if (has_realized) sum(realized_loss, na.rm = TRUE) else NA_real_,
+    realized_profit = if (has_realized) sum(realized_profit, na.rm = TRUE) else NA_real_,
+
+    # Proxy economics
+    loss_proxy = sum(loss_proxy, na.rm = TRUE),
+    rev_proxy  = sum(rev_proxy,  na.rm = TRUE),
+    net_proxy  = sum(net_proxy,  na.rm = TRUE),
+
+    .groups = "drop"
+  ) |>
+  arrange(desc(risk_decile))
+
+deciles_tbl
+
+
+```
+
+
+```{r output}
+# ------------------------------------------------------------------------------
+# WRITE OUTPUTS
+# ------------------------------------------------------------------------------
+write_parquet(scored_2016, OUT_SCORED)
+write_parquet(deciles_tbl, OUT_DECILES)
+
+cat("Saved:", OUT_SCORED, "\n")
+cat("Saved:", OUT_DECILES, "\n")
+```
+
+```{r baseline}
+baseline <- scored_2016 |>
+  summarise(
+    loans    = n(),
+    defaults = sum(default_flag == 1, na.rm = TRUE),
+
+    # realized
+    realized_loss   = if (has_realized) sum(realized_loss, na.rm = TRUE) else NA_real_,
+    realized_profit = if (has_realized) sum(realized_profit, na.rm = TRUE) else NA_real_,
+
+    # proxy
+    loss_proxy = sum(loss_proxy, na.rm = TRUE),
+    rev_proxy  = sum(rev_proxy,  na.rm = TRUE),
+    net_proxy  = sum(net_proxy,  na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+baseline
+
+```
+
+
+```{r plot}
+# ------------------------------------------------------------------------------
+# PLOTS
+# ------------------------------------------------------------------------------
+# Chart 1: Default rate by PD decile (10 = highest PD)
+p1 <- ggplot(deciles_tbl, aes(x = factor(risk_decile), y = default_rate)) +
+  geom_col() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Held-out Year (2016) — Observed Default Rate by PD Decile",
+    x = "Risk decile (10 = highest PD)",
+    y = "Observed default rate"
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p1)
+
+# Chart 2: Net impact vs decline %
+p2 <- ggplot(policy_tbl, aes(x = decline_pct, y = net_impact)) +
+  geom_line(linewidth = 1.1) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = "Policy Simulation (Realized) — Net Impact vs Declining Top Risk",
+    x = "Decline top X% by PD",
+    y = "Net impact (policy − baseline)"
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p2)
+```
+
+```{r curve}
+policy_curve <- function(df, decline_pct) {
+  stopifnot(decline_pct >= 0, decline_pct <= 1)
+
+  df <- df |> arrange(desc(pd))
+  n_total   <- nrow(df)
+  n_decline <- floor(n_total * decline_pct)
+
+  declined <- if (n_decline > 0) df[1:n_decline, ] else df[0, ]
+  kept     <- if (n_decline > 0) df[(n_decline + 1):n_total, ] else df
+
+  use_realized <- has_realized && !all(is.na(df$realized_profit))
+
+  if (use_realized) {
+    kept_s <- kept |>
+      summarise(
+        kept_n        = n(),
+        kept_defaults = sum(default_flag == 1, na.rm = TRUE),
+        kept_loss     = sum(realized_loss, na.rm = TRUE),
+        kept_profit   = sum(realized_profit, na.rm = TRUE),
+        .groups = "drop"
+      )
+
+    tibble(
+      decline_pct = decline_pct,
+      decline_n   = n_decline,
+      kept_n      = kept_s$kept_n,
+
+      defaults_baseline = baseline$defaults,
+      defaults_kept     = kept_s$kept_defaults,
+      defaults_avoided  = baseline$defaults - kept_s$kept_defaults,
+
+      loss_baseline  = baseline$realized_loss,
+      loss_kept      = kept_s$kept_loss,
+      loss_avoided   = baseline$realized_loss - kept_s$kept_loss,
+
+      profit_baseline = baseline$realized_profit,
+      profit_kept     = kept_s$kept_profit,
+      profit_change   = kept_s$kept_profit - baseline$realized_profit,
+
+      net_baseline = baseline$realized_profit,
+      net_kept     = kept_s$kept_profit,
+      net_impact   = kept_s$kept_profit - baseline$realized_profit,
+
+      econ_mode = "realized"
+    )
+  } else {
+    kept_s <- kept |>
+      summarise(
+        kept_n        = n(),
+        kept_defaults = sum(default_flag == 1, na.rm = TRUE),
+        kept_loss     = sum(loss_proxy, na.rm = TRUE),
+        kept_rev      = sum(rev_proxy,  na.rm = TRUE),
+        kept_net      = sum(net_proxy,  na.rm = TRUE),
+        .groups = "drop"
+      )
+
+    tibble(
+      decline_pct = decline_pct,
+      decline_n   = n_decline,
+      kept_n      = kept_s$kept_n,
+
+      defaults_baseline = baseline$defaults,
+      defaults_kept     = kept_s$kept_defaults,
+      defaults_avoided  = baseline$defaults - kept_s$kept_defaults,
+
+      loss_baseline = baseline$loss_proxy,
+      loss_kept     = kept_s$kept_loss,
+      loss_avoided  = baseline$loss_proxy - kept_s$kept_loss,
+
+      rev_baseline = baseline$rev_proxy,
+      rev_kept     = kept_s$kept_rev,
+      rev_forgone  = baseline$rev_proxy - kept_s$kept_rev,
+
+      net_baseline = baseline$net_proxy,
+      net_kept     = kept_s$kept_net,
+      net_impact   = kept_s$kept_net - baseline$net_proxy,
+
+      econ_mode = "proxy"
+    )
+  }
+}
+
+grid <- seq(0, 0.30, by = 0.01)
+policy_tbl <- bind_rows(lapply(grid, function(x) policy_curve(scored_2016, x)))
+
+policy_tbl |> slice_head(n = 12)
+
+write_parquet(policy_tbl, OUT_POLICY)
+cat("Saved:", OUT_POLICY, "\n")
+
+```
+
+```{r chart}
+# Chart 1: Default rate by PD decile
+p1 <- ggplot(deciles_tbl, aes(x = factor(risk_decile), y = default_rate)) +
+  geom_col() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Held-out Year (2016) — Observed Default Rate by PD Decile",
+    x = "Risk decile (10 = highest PD)",
+    y = "Observed default rate"
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p1)
+
+# Chart 2: Net impact vs decline %
+p2 <- ggplot(policy_tbl, aes(x = decline_pct, y = net_impact)) +
+  geom_line(linewidth = 1.1) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = paste0("Policy Simulation (", unique(policy_tbl$econ_mode), ") — Net Impact vs Declining Top Risk"),
+    x = "Decline top X% by PD",
+    y = "Net impact (policy − baseline)"
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p2)
+
+```

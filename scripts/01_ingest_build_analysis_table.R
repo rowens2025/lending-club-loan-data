@@ -38,6 +38,21 @@ dt <- dt %>%
   filter(!is.na(default_flag)) %>%
   filter(!is.na(issue_year), !is.na(issue_month))
 
+# ---- add outcome cashflow columns for economics (NOT modeling features) ----
+econ_cols <- c(
+  "total_pymnt","total_pymnt_inv",
+  "total_rec_prncp","total_rec_int","total_rec_late_fee",
+  "recoveries","collection_recovery_fee"
+)
+
+# make sure they exist; if not, they’ll be silently dropped
+econ_cols <- econ_cols[econ_cols %in% names(dt)]
+
+# coerce to numeric (these are often read as character)
+dt <- dt %>%
+  mutate(across(all_of(econ_cols), ~ suppressWarnings(as.numeric(.))))
+
+
 # enhance data by adding fico_mid
 if (all(c("fico_range_low","fico_range_high") %in% names(dt))) {
   dt <- dt %>%
@@ -55,3 +70,5 @@ cat("Rows:", nrow(dt))
 cat("Issue date range:", min(dt$issue_ym), "→", max(dt$issue_ym))
 cat("Default rate:", round(mean(dt$default_flag), 4))
 print(table(dt$loan_status))
+
+head(dt)

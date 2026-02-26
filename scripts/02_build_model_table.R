@@ -34,6 +34,11 @@ emp_to_num <- function(x) {
   suppressWarnings(as.integer(x))
 }
 
+econ_keep <- c(
+  "total_pymnt","total_pymnt_inv",
+  "total_rec_prncp","total_rec_int","total_rec_late_fee",
+  "recoveries","collection_recovery_fee"
+)
 
 
 # select feature contract
@@ -43,7 +48,8 @@ keep <- c(
   "fico_mid","dti","revol_util","delinq_2yrs","inq_last_6mths",
   "open_acc","pub_rec","revol_bal","total_acc",
   "annual_inc","emp_length","home_ownership","verification_status",
-  "purpose","addr_state"
+  "purpose","addr_state",
+  econ_keep
 )
 
 
@@ -57,6 +63,15 @@ m <- m %>%
     int_rate   = pct_to_num(int_rate),
     revol_util = pct_to_num(revol_util),
     emp_length = emp_to_num(emp_length),
+    
+    # econ numeric coercions (safe)
+    total_pymnt = as.numeric(total_pymnt),
+    total_pymnt_inv = as.numeric(total_pymnt_inv),
+    total_rec_prncp = as.numeric(total_rec_prncp),
+    total_rec_int = as.numeric(total_rec_int),
+    total_rec_late_fee = as.numeric(total_rec_late_fee),
+    recoveries = as.numeric(recoveries),
+    collection_recovery_fee = as.numeric(collection_recovery_fee),
 
     # numerics
     loan_amnt   = as.numeric(loan_amnt),
@@ -80,6 +95,15 @@ m <- m %>%
     addr_state = as.factor(addr_state)
   )
 
+
+m <- m %>%
+  mutate(
+    realized_net_loss = loan_amnt - total_rec_prncp - recoveries + collection_recovery_fee,
+    realized_net_profit = total_rec_prncp + total_rec_int + total_rec_late_fee +
+      recoveries - collection_recovery_fee - loan_amnt
+  )
+
+
 # drop rows with missing values 
 m <- m %>%
   filter(
@@ -97,3 +121,4 @@ cat("Saved:", OUT_PATH)
 cat("Rows:", nrow(m))
 cat("Default rate:", round(mean(m$default_flag), 4))
 cat("Issue range:", min(m$issue_ym), "→", max(m$issue_ym))
+head(m)

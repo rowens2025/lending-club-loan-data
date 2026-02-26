@@ -14,7 +14,6 @@ execute:
 ---
 
 ```{r libraries}
-install.packages("glmnet")
 library(glmnet)
 library(arrow)
 library(dplyr)
