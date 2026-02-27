@@ -368,6 +368,7 @@ ui <- page_navbar(
   
   # ------------------------
   # Tab 4 — Try It Loan Input
+  # (ONLY CHANGES IN THIS TAB)
   # ------------------------
   nav_panel(
     "Try It — Loan Input",
@@ -385,6 +386,14 @@ ui <- page_navbar(
         ),
         div(class="tw-side-group",
             h5("Inputs", style="font-size:14px;margin-bottom:10px;"),
+            
+            # (1) Move threshold slider to TOP of Tab 4 controls
+            sliderInput("decline_pct_try", "Decline top X% (decision threshold)", min = 0, max = 1, value = 0.30, step = 0.01),
+            div(style="margin-top:-6px;color:rgba(234,241,251,0.70);font-size:12px;",
+                "Decision: decline if PD is in the top X% of the 2016 PD distribution."
+            ),
+            br(),
+            
             numericInput("in_fico", "FICO (mid)", value = 680, min = 300, max = 850),
             numericInput("in_dti", "DTI", value = 15, min = 0, max = 60),
             numericInput("in_int_rate", "Interest rate (%)", value = 14, min = 0, max = 60),
@@ -400,9 +409,7 @@ ui <- page_navbar(
             uiOutput("in_home_ui"),
             uiOutput("in_ver_ui"),
             uiOutput("in_purpose_ui"),
-            uiOutput("in_state_ui"),
-            br(),
-            sliderInput("decline_pct_try", "Decline top X% (decision threshold)", min = 0, max = 1, value = 0.30, step = 0.01)
+            uiOutput("in_state_ui")
         )
       ),
       
@@ -410,24 +417,29 @@ ui <- page_navbar(
         div(style="font-weight:700;letter-spacing:0.3px;opacity:0.9;",
             "Single Loan • Scoring Demo"),
         div(style="margin-top:10px;color:rgba(234,241,251,0.7);font-size:12px;",
-            "Scores with the same logistic PD model (train ≤ 2015) and compares against 2016 PD distribution.")
+            "Scores with the same logistic PD model (train ≤ 2015) and compares against 2016 PD distribution."),
+        
+        # (2) Move KPIs to TOP like Tab 1 / Tab 3; remove “Score result” label entirely
+        div(class="tw-kpis tw-kpis-wide",
+            ui_kpi("Predicted PD", "kpi_pd_try", style="teal"),
+            ui_kpi("Risk decile", "kpi_decile_try", style="orange"),
+            ui_kpi("Decision", "kpi_decision_try", style="lime")
+        )
       ),
       
       body_ui = div(
         class="tw-cards",
-        div(class="tw-card",
-            h4("Score result"),
-            # ---- wider KPI row so APPROVE/DECLINE fits ----
-            div(class="tw-kpis tw-kpis-wide",
-                ui_kpi("Predicted PD", "kpi_pd_try", style="teal"),
-                ui_kpi("Risk decile", "kpi_decile_try", style="orange"),
-                ui_kpi("Decision", "kpi_decision_try", style="lime")
-            ),
-            uiOutput("warn_oob_try")
-        ),
+        
+        # (3) Make the distribution plot the main/left visual and larger
         div(class="tw-card tw-plot",
             h4("Where your loan sits vs 2016 PD distribution"),
-            plotOutput("plot_pd_hist_try", height = 320)
+            plotOutput("plot_pd_hist_try", height = 440)
+        ),
+        
+        # Keep warnings in a separate card (no “Score result” header)
+        div(class="tw-card",
+            h4("Input sanity check"),
+            uiOutput("warn_oob_try")
         )
       )
     )
@@ -808,7 +820,6 @@ server <- function(input, output, session) {
     poly_col <- adjustcolor("#49c5aa", alpha.f = 0.18)
     line_col <- "#49c5aa"
     
-    # ring labels (percent)
     ring_vals <- seq(0, maxv, length.out = 5)
     ring_labs <- paste0(round(ring_vals * 100), "%")
     
@@ -827,8 +838,6 @@ server <- function(input, output, session) {
       vlabcol = "#0b1220",
       vlcex = 0.9
     )
-    
-    # small note: title is handled by your card header; keep plot clean
   })
   
   # ----------------------------
@@ -998,7 +1007,6 @@ server <- function(input, output, session) {
     d <- pd_to_decile(p, pd_reference_try())
     if (is.na(d)) "N/A" else as.character(d)
   })
-  
   
   output$kpi_decision_try <- renderText({
     pd_ref <- pd_reference_try()
